@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="./assets/global.css">
+
+    <style>
+        .snake-map {
+            position: relative;
+            margin: 10px auto;
+            background-color: #f5ead8;
+            border-radius: 6px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+        }
+
+        .snake-map .snake-item {
+            background-color: #d9b38c;
+            position: absolute;
+            width: 24px;
+            height: 24px;
+            font-size: 16px;
+            line-height: 24px;
+            text-align: center;
+            box-sizing: border-box;
+        }
+
+        .snake-map .snake-item.snake {
+            background-color: #3f9e3f;
+        }
+
+        .snake-map .snake-item.food {
+            background-color: #ffe08a;
+        }
+
+        .snake-map .snake-item.portal-blue {
+            background-color: #a8d8ff;
+        }
+
+        .snake-map .snake-item.portal-orange {
+            background-color: #ffc37a;
+        }
+
+        .game-over {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-size: 26px;
+            font-weight: bold;
+            color: #c0392b;
+        }
+
+        .hud {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            margin: 12px 0 4px;
+            font-size: 15px;
+            font-weight: bold;
+        }
+
+        .operate {
+            display: flex;
+            flex-wrap: wrap;
+            margin: 0 auto;
+            width: 120px;
+            padding: 20px 0;
+        }
+
+        .operate .btn {
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            user-select: none;
+            cursor: pointer;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            background: #fff;
+            box-sizing: border-box;
+        }
+
+        .operate .btn:active {
+            background-color: #d9b38c;
+            color: #fff;
+            transition: all .4s ease-in-out;
+        }
+
+        .operate .flex {
+            width: 100%;
+        }
+
+        .desc {
+            margin: 20px;
+            font-size: 12px;
+            color: rgba(0, 0, 0, 0.7);
+            text-align: center;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="hud">
+        <div id="score">得分：0｜长度：2</div>
+        <div id="status">状态：正常</div>
+    </div>
+
+    <div class="snake-map"></div>
+
+    <div class="desc">玩法：方向键或屏幕按钮控制蛇。☕咖啡=加速 ｜ 🍜夜宵=加长3节 ｜ 📚DDL=高分但方向反转 ｜ 😴睡觉=恢复正常 ｜ 💀早八=方向反转。🔵传送门进、🟠传送门出，传送门会随机换位置。</div>
+
+    <div class="operate">
+        <div class="btn flex">上</div>
+        <div class="btn">左</div>
+        <div class="btn">下</div>
+        <div class="btn">右</div>
+    </div>
+
+    <script type="module">
+        import { v2, Maths, Randoms, cloneDeep } from "https://unpkg.com/@3r/tool";
+
+        const CELL = 24;
+        const ROWS = 15;
+        const COLS = 15;
+        const BASE_INTERVAL = 500;
+        const BOOST_INTERVAL = 180;
+        const PORTAL_INTERVAL = 6000;
+
+        const mapEnum = { blank: 0, snake: 1, food: 2 };
+
+        const FOODS = [
+            { key: 'coffee',  emoji: '☕', name: '咖啡', score: 15, grow: 1, effect: 'boost',   duration: 5000 },
+            { key: 'snack',   emoji: '🍜', name: '夜宵', score: 10, grow: 3, effect: null,      duration: 0 },
+            { key: 'ddl',     emoji: '📚', name: 'DDL',  score: 30, grow: 1, effect: 'confuse', duration: 6000 },
+            { key: 'sleep',   emoji: '😴', name: '睡觉', score: 5,  grow: 1, effect: 'sleep',   duration: 0 },
+            { key: 'morning', emoji: '💀', name: '早八', score: 10, grow: 1, effect: 'confuse', duration: 4000 },
+        ];
+        const FOOD_WEIGHTS = [15, 30, 15, 15, 25];
+
+        let map = [];
+        for (let y = 0; y < ROWS; y++) map.push(new Array(COLS).fill(mapEnum.blank));
+
+        let snake = [v2(5, 5), v2(5, 6)];
+        let movingDirection = v2(1, 0);
+        let pendingGrowth = 0;
+        let score = 0;
+        let dead = false;
+        let status = { boostedUntil: 0, confusedUntil: 0 };
+
+        let currentFood = null;
+        let portals = { blue: v2(-1, -1), orange: v2(-1, -1) };
+
+        let snakeConDom = document.querySelector('.snake-map');
+        let operateDom = document.querySelectorAll('.operate > .btn');
+        let scoreDom = document.querySelector('#score');
+        let statusDom = document.querySelector('#status');
+        let snakeMapDom = {};
+
+        let gameTimer = 0;
+        let portalTimer = 0;
+
+        function isPortalCell(x, y) {
+            if (portals.blue.x === x && portals.blue.y === y) return 'blue';
+            if (portals.orange.x === x && portals.orange.y === y) return 'orange';
+            return null;
+        }
+
+        function otherPortal(which) {
+            return which === 'blue' ? portals.orange : portals.blue;
+        }
+
+        function randomFreeCell() {
+            for (let i = 0; i < 1000; i++) {
+                let x = Randoms.getRandomInt(0, COLS);
+                let y = Randoms.getRandomInt(0, ROWS);
+                if (map[y][x] === mapEnum.blank && !isPortalCell(x, y)) return v2(x, y);
+            }
+            return null;
+        }
+
+        function placePortals() {
+            if (dead) return false;
+            let a = randomFreeCell();
+            if (!a) return false;
+            let b = randomFreeCell();
+            if (!b) return false;
+            let guard = 0;
+            while (a.x === b.x && a.y === b.y && guard++ < 100) b = randomFreeCell();
+            if (a.x === b.x && a.y === b.y) return false;
+            portals.blue = a;
+            portals.orange = b;
+            return true;
+        }
+
+        function pickFoodType() {
+            let total = FOOD_WEIGHTS.reduce((s, w) => s + w, 0);
+            let r = Math.random() * total;
+            for (let i = 0; i < FOODS.length; i++) {
+                r -= FOOD_WEIGHTS[i];
+                if (r < 0) return FOODS[i];
+            }
+            return FOODS[0];
+        }
+
+        function generateFood() {
+            if (dead) return;
+            let cell = randomFreeCell();
+            if (!cell) return;
+            currentFood = { x: cell.x, y: cell.y, type: pickFoodType() };
+            map[cell.y][cell.x] = mapEnum.food;
+        }
+
+        function isBoosted() { return status.boostedUntil > Date.now(); }
+        function isConfused() { return status.confusedUntil > Date.now(); }
+        function currentInterval() { return isBoosted() ? BOOST_INTERVAL : BASE_INTERVAL; }
+
+        function renderStatus() {
+            let s = '正常';
+            if (dead) {
+                s = '游戏结束';
+            } else if (isConfused()) {
+                s = '💀 操作混乱（方向反转）';
+            } else if (isBoosted()) {
+                s = '☕ 加速中';
+            }
+            statusDom.textContent = '状态：' + s;
+            scoreDom.textContent = `得分：${score}｜长度：${snake.length}`;
+        }
+
+        function renderMap() {
+            if (dead) return;
+            for (let y = 0; y < ROWS; y++) {
+                for (let x = 0; x < COLS; x++) {
+                    let el = snakeMapDom[`${x},${y}`];
+                    if (!el) continue;
+                    el.classList.remove('snake', 'food', 'portal-blue', 'portal-orange');
+                    el.textContent = '';
+                    let val = map[y][x];
+                    if (val === mapEnum.snake) {
+                        el.classList.add('snake');
+                    } else if (val === mapEnum.food && currentFood) {
+                        el.classList.add('food');
+                        el.textContent = currentFood.type.emoji;
+                    }
+                }
+            }
+            if (portals.blue.x >= 0) {
+                let b = snakeMapDom[`${portals.blue.x},${portals.blue.y}`];
+                if (b) { b.classList.add('portal-blue'); b.textContent = '🔵'; }
+            }
+            if (portals.orange.x >= 0) {
+                let o = snakeMapDom[`${portals.orange.x},${portals.orange.y}`];
+                if (o) { o.classList.add('portal-orange'); o.textContent = '🟠'; }
+            }
+        }
+
+        function applyFoodEffect(type) {
+            score += type.score;
+            if (type.effect === 'boost') {
+                status.boostedUntil = Date.now() + type.duration;
+            } else if (type.effect === 'confuse') {
+                status.confusedUntil = Date.now() + type.duration;
+            } else if (type.effect === 'sleep') {
+                status.boostedUntil = 0;
+                status.confusedUntil = 0;
+            }
+        }
+
+        function moving() {
+            if (dead) return;
+            if (Maths.equal(movingDirection, v2(0, 0))) return;
+
+            let head = cloneDeep(snake[0]);
+            let newHead = head.plus(movingDirection);
+
+            let entered = isPortalCell(newHead.x, newHead.y);
+            if (entered) {
+                newHead = cloneDeep(otherPortal(entered));
+            }
+
+            let cell = map?.[newHead.y]?.[newHead.x];
+            let refreshPortals = false;
+
+            if (cell === mapEnum.blank) {
+                if (pendingGrowth > 0) {
+                    pendingGrowth--;
+                } else {
+                    let tail = snake.pop();
+                    map[tail.y][tail.x] = mapEnum.blank;
+                }
+                map[newHead.y][newHead.x] = mapEnum.snake;
+                snake.unshift(newHead);
+            } else if (cell === mapEnum.food) {
+                map[newHead.y][newHead.x] = mapEnum.snake;
+                snake.unshift(newHead);
+                applyFoodEffect(currentFood.type);
+                pendingGrowth = Math.max(0, currentFood.type.grow - 1);
+                currentFood = null;
+                generateFood();
+                refreshPortals = true;
+            } else {
+                gameOver();
+                return;
+            }
+
+            if (entered || refreshPortals) placePortals();
+            renderMap();
+            renderStatus();
+        }
+
+        function onKeyDown(key) {
+            if (dead) return;
+            let direction = v2(0, 0);
+            if (key === 'ArrowUp') direction = v2(0, -1);
+            else if (key === 'ArrowDown') direction = v2(0, 1);
+            else if (key === 'ArrowLeft') direction = v2(-1, 0);
+            else if (key === 'ArrowRight') direction = v2(1, 0);
+            else return;
+
+            if (isConfused()) direction = v2(-direction.x, -direction.y);
+
+            if (Maths.equal(movingDirection, direction)) return;
+            let cannot = v2(-movingDirection.x, -movingDirection.y);
+            if (Maths.equal(cannot, direction)) return;
+
+            movingDirection = direction;
+        }
+
+        function gameOver() {
+            dead = true;
+            clearTimeout(gameTimer);
+            clearInterval(portalTimer);
+            snakeConDom.innerHTML = `<div class="game-over">游戏结束<br><span style="font-size:18px">得分：${score}｜长度：${snake.length}</span></div>`;
+            renderStatus();
+        }
+
+        function loop() {
+            moving();
+            if (!dead) gameTimer = setTimeout(loop, currentInterval());
+        }
+
+        function init() {
+            for (let y = 0; y < ROWS; y++) {
+                for (let x = 0; x < COLS; x++) {
+                    let el = document.createElement('div');
+                    el.classList.add('snake-item');
+                    el.style.left = (x * CELL) + 'px';
+                    el.style.top = (y * CELL) + 'px';
+                    snakeConDom.appendChild(el);
+                    snakeMapDom[`${x},${y}`] = el;
+                }
+            }
+            snakeConDom.style.width = (COLS * CELL) + 'px';
+            snakeConDom.style.height = (ROWS * CELL) + 'px';
+
+            for (let i = 0; i < snake.length; i++) {
+                map[snake[i].y][snake[i].x] = mapEnum.snake;
+            }
+
+            const keys = ['ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight'];
+            operateDom.forEach((btn, i) => {
+                btn.addEventListener('click', () => onKeyDown(keys[i]));
+            });
+
+            placePortals();
+            generateFood();
+            renderMap();
+            renderStatus();
+        }
+
+        document.addEventListener('keydown', (ev) => {
+            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(ev.key)) {
+                ev.preventDefault();
+            }
+            onKeyDown(ev.key);
+        });
+
+        init();
+        gameTimer = setTimeout(loop, currentInterval());
+        portalTimer = setInterval(() => {
+            if (!dead && placePortals()) renderMap();
+        }, PORTAL_INTERVAL);
+    </script>
+</body>
+
+</html>
